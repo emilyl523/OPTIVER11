@@ -217,7 +217,7 @@ st.markdown(f"""
 
 @st.cache_data(ttl=3600)
 def load_stock(stock_id):
-    url = https://drive.google.com/file/d/19rUltZPHYA37o0Y91BdHQnIYDihgY9c-/view?usp=sharing
+    url = "https://drive.google.com/file/d/19rUltZPHYA37o0Y91BdHQnIYDihgY9c-/view?usp=sharing"
     stock_data = pd.read_csv(url)
     stock_data['datetime'] = pd.to_datetime(stock_data['date'].astype(str) + ' ' + stock_data['time'].astype(str)) + \
                     pd.to_timedelta(stock_data['seconds_in_bucket'], unit='s')
