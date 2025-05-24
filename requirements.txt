@@ -8,5 +8,4 @@ lightgbm
 tqdm
 zipfile 
 io
-requests
 gdown
