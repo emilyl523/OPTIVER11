@@ -11,7 +11,6 @@ import numpy as np
 from tqdm import tqdm
 import zipfile
 import io
-import requests
 
 # Enhanced Page Configuration
 st.set_page_config(
@@ -220,14 +219,18 @@ st.markdown(f"""
 
 @st.cache_data(ttl=3600)
 def load_stock(stock_id):
-    zip_url = "https://drive.google.com/file/d/19rUltZPHYA37o0Y91BdHQnIYDihgY9c-/view?usp=drive_link"
-    response = requests.get(zip_url)
-    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-        # List files in the zip (just to check names)
-        print(z.namelist())  # Optional, for debugging
-        # Read the CSV file inside (replace with actual filename if known)
-        with z.open(z.namelist()[0]) as f:
+    file_id = "19rUltZPHYA37o0Y91BdHQnIYDihgY9c"
+    gdown_url = f"https://drive.google.com/uc?id={file_id}"
+
+    zip_path = "data.zip"
+    gdown.download(gdown_url, zip_path, quiet=False)
+
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        file_list = zip_ref.namelist()
+        print("Files in zip:", file_list)  # optional
+        with zip_ref.open(file_list[0]) as f:
             stock_data = pd.read_csv(f)
+
     stock_data['datetime'] = pd.to_datetime(stock_data['date'].astype(str) + ' ' + stock_data['time'].astype(str)) + \
                     pd.to_timedelta(stock_data['seconds_in_bucket'], unit='s')
     stock_data.set_index('datetime', inplace=True)
