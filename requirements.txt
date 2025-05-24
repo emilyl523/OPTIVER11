@@ -6,4 +6,7 @@ ta
 matplotlib
 lightgbm
 tqdm
+zipfile 
+io
+requests
 
