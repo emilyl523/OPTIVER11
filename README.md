@@ -34,7 +34,7 @@ The **EchoVol20** is a powerful tool designed to analyze stock market data and p
 If uploading a custom dataset, ensure the file meets the following requirements:
 - **File Format**: CSV or Excel (`.csv`, `.xlsx`).
 - Follow the same format as the `small_stock_data.csv`
-
+- ✅ To recreate the dataset used in the app, run the script app_dataset_merge.py, which merges time_id_reference.csv and order_book_feature.csv into the required input format.
 ---
 
 ## 🖥️ Installation
