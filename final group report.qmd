@@ -1,0 +1,1097 @@
+---
+title: "DATA3888_2025 Final Group Report"
+subtitle: "Predicting volatility"
+author: "..."
+date: "01-June-2025"
+jupyter: python3
+bibliography: references.bib
+format:
+  html:
+    code-tools: true
+    code-fold: true
+    fig_caption: yes
+    number_sections: true
+    embed-resources: true
+    theme: cosmo
+    highlight-style: github
+    css: 
+      - https://use.fontawesome.com/releases/v5.0.6/css/all.css
+    toc: true
+    toc_depth: 4
+    toc_float: true
+execute:
+  echo: true
+  warning: false
+  tidy: true
+  freeze: false
+---
+
+# Executive Summary
+
+> Traditional volatility forecasting models like EGARCH, while statistically rigorous, struggle with the speed, noise, and complexity of modern high-frequency markets. As trading demands real-time responsiveness, reliance on lagged prices misses dynamic signals in live order book data.
+
+This project investigates whether machine learning models trained on high-frequency order book features can outperform traditional econometric approaches in short-term volatility forecasting. Using second-by-second data from anonymous stocks, we engineered domain-informed features—capturing momentum, spread, and latent liquidity—and trained models including LightGBM, XGBoost, Random Forest, and robust regression.
+
+Results strongly favor machine learning: LightGBM reduced error by over $99\%$ versus EGARCH while delivering sub-millisecond prediction speed, ideal for real-time trading. SHAP analysis identified instantaneous price shifts and liquidity-weighted volatility as key drivers.
+
+These insights power ***EchoVol20,*** an interactive dashboard that forecasts volatility in real time. Users can upload order book data, visualize predictive features, and receive actionable volatility regime classifications. A built-in risk calculator transforms forecasts into position sizing guidance—bridging predictive power with practical trading decisions. This work affirms our hypothesis and delivers a deployable system embodying a fast, adaptive, real-time market risk forecasting paradigm.
+
+# Introduction
+
+Volatility—the degree of variation in asset returns—is more than a statistical artefact; it underpins key decisions in derivative pricing, portfolio allocations, and risk management (@bhambu2025high). Yet in modern financial markets, where price dynamics unfold in miliseconds, volatility remains votoriously difficult to forecast. The consequences of misjudging it are severe:
+
+> In 2024, a sudden surge in market uncertainty caused major losses for investment products that had been betting on calm market conditions—wiping out over \$4 billion in value within days (\@mackenzie2024traders). Events like this highlight the urgent need for better tools to predict when markets might become unstable.
+
+Historically, volatility modelling has been dominated by the Generalised Autoregressive Conditional Heteroskedasticity (GARCH) models, which leverage patterns in historical return series. Extensions like the Exponential GARCH (EGARCH) improved upon this by accounting for the asymmetric impact of negative returns on future volatility (@nelson1991conditional). However, these models assume stationarity and rely on linear dynamics, limiting their effectiveness in high-frequency environments characterised by rapid regime shifts and nonlinear interactions (@mohammad2020dynamical).
+
+The rise of high-frequency trading (HFT) has transformed volatility into a high-resolution challenge. Order books now stream real-time data on liquidity, price imbalances, and spread dynamics—rich, untapped signals that often precede volatility shocks (@abergel2016high). Machine learning (ML) models, with their ability to extract patterns from high-dimensional and noisy data, offer a promising alternative. But a key question remains:
+
+::: callout-important
+**Research Question**
+
+**Do machine learning models trained on high-frequency order book data provide more accurate and timely short-term volatility forecasts than traditional econometric approaches?**
+:::
+
+To answer this, we conduct a systematic comparative study of:
+
+-   **EGARCH**: A benchmark econometric model designed to capture volatility asymmetries.
+
+-   **LightGBM** and **XGBoost**: Gradient boosting frameworks capable of modelling complex nonlinearities and interactions in noisy, high-frequency data.
+
+-   Other contenders: Including **Random Forest** and robust linear models such as **Huber Regressor.**
+
+As markets become increasingly automated, accurate real-time volatility forecasting is critical not just for performance, but for resilience. This study bridges statistical theory and modern data-driven methods, revealing how high-frequency data and machine learning can reshape our understanding of market dynamics.
+
+# Method Overview
+
+Our methodology, summarized in @fig-schematic, begins with the collection of order book data for 126 anonymized stocks. Stocks were segmented into high, low, and general volatility cohorts based on average realized volatility. From each group, representative stocks and 100 `time_ids` were sampled to construct a unified yet volatility-diverse training dataset.
+
+Next, we performed domain-driven feature engineering tailored to the microstructure of limit order books. Core predictive signals such as the volume-weighted average price (WAP), log returns, bid-ask spread deltas, volume-weighted volatility, and noise ratios were derived to capture transient liquidity stress and price momentum.
+
+We then evaluated five model classes under controlled settings, each being assessed using rigorous metrics—RMSE, MAE, Mean Directional Accuracy (MDA), and prediction latency—to balance statistical precision with deployment viability.
+
+After identifying LightGBM as the top-performing model in both accuracy and speed, we conducted targeted hyperparameter tuning using `optuna` (@akiba2019optuna) and feature selection based on SHAP (@louhichi2023shapley) values to refine predictive performance and model interpretability. The finalized model was then stress-tested on high- and low-volatility stock subsets to evaluate robustness and generalizability across market regimes.
+
+Finally, the optimized model was integrated into a lightweight application interface designed for trading environments, enabling sub-millisecond predictions of short-term volatility.
+
+![End-to-end pipeline from data sampling and feature engineering to model selection, tuning, and deployment for real-time volatility forecasting.](images/newest%20schematic%20v2.png){#fig-schematic fig-align="center" width="627"}
+
+# Data Collection
+
+```{python}
+# import all libraries needed to generate plots 
+# Standard libraries including for plotting
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.gridspec as gridspec
+import warnings 
+from sklearn.exceptions import ConvergenceWarning 
+from sklearn.model_selection import TimeSeriesSplit
+import optuna 
+import shap
+
+# import all model libraries 
+import lightgbm as lgb
+import xgboost as xgb 
+from sklearn.linear_model import HuberRegressor
+from sklearn.ensemble import RandomForestRegressor
+from arch import arch_model
+
+# import metrics
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import time
+import plotly.express as px
+import plotly.graph_objects as go
+
+from matplotlib.ticker import LogLocator
+```
+
+## Data Overview
+
+**Primary Training Dataset: High-Frequency Anonymized Order Book Data**
+
+We use a proprietary dataset containing high-frequency order book snapshots from 126 anonymised stocks. Each record is grouped by a unique `time_id`, representing an unspecified time segment within a trading day. These `time_id`s are neither sequential nor linked to actual timestamps, preventing direct temporal aggregation for standard time-series modeling.
+
+Within each `time_id`, bid-ask prices and volumes are recorded at a second-level resolution for up to 600 seconds (simulating a 10-minute trading window). However, gaps exist due to intermittent recording—typical in high-frequency systems.
+
+Due to the computational cost of processing full-depth order books across all stocks, we selected a representative random sample of five. This mirrors real-world scenarios where models must generalize to new instruments with sparse historical data.
+
+------------------------------------------------------------------------
+
+**Volatility-Stratified Subsets for Regime Evalutation**
+
+To test model robustness under varying market conditions, we constructed three volatility-based subsets by stratifying the data according to average realised volatility per `time_id`. These subsets were ranked based on each stock's overall average volatility (see `stock_ranking.py` for ranking logic).
+
+-   High-Volatility Dataset `df_high`: Top 5 stocks
+
+-   Low-Volatility Dataset `df_low`: Bottom 5 stocks
+
+-   General Dataset `df_general`: Random selection of 5 stocks in neither extreme groups, used as a baseline for model development.
+
+Each subset contains 100 randomly sample `time_id` per stock, concatenated into one final labeled dataset using a common preprocessing function. All stocks were verified there were sufficient number of `time_id` and no further filtering was required.
+
+```{python}
+#| eval: false
+def generate_representative_dataset(stock_files, label, sample_size=100, seed=42):
+    np.random.seed(seed)
+    sampled_dfs = []
+
+    for file in stock_files:
+        stock_df = pd.read_csv(file)
+        stock_name = file.split('.')[0]
+        sampled_ids = np.random.choice(stock_df['time_id'].unique(), size=sample_size, replace=False)
+        sampled_df = stock_df[stock_df['time_id'].isin(sampled_ids)].copy()
+        sampled_df['stock_name'] = stock_name
+        sampled_df['dataset_label'] = label
+        sampled_dfs.append(sampled_df)
+
+    return pd.concat(sampled_dfs, ignore_index=True)
+  
+general_stocks = ['stock_39.csv', 'stock_47.csv', 'stock_61.csv', 'stock_84.csv', 'stock_93.csv']
+high_vol_stocks = ['stock_6.csv', 'stock_27.csv', 'stock_75.csv', 'stock_80.csv', 'stock_18.csv']
+low_vol_stocks = ['stock_41.csv', 'stock_43.csv', 'stock_29.csv', 'stock_46.csv', 'stock_125.csv']
+
+df_general = generate_representative_dataset(general_stocks, label='general') 
+df_high = generate_representative_dataset(high_vol_stocks, label='high')
+df_low = generate_representative_dataset(low_vol_stocks, label='low')
+```
+
+------------------------------------------------------------------------
+
+**Additional Dataset of App Deployment** For real-world deployment, we integrated a complementary dataset provided by Optiver. This includes real stocks such as Apple and Amazon, along with identifiable tickers and sequential time_ids mapped to real timestamps. This dataset was used in the interactive application to simulate predictions in a production-like setting (see `additional_data_merge.py` for merging logic).
+
+## Data Preprocessing
+
+To derive informative features from the raw order book snapshots, we first computed the Weighted Average Price (WAP) for each second using the formula: $$
+\text{WAP} = \frac{P_{bid}^{(1)}\cdot V_{bid}^{(1)} + P_{ask}^{(1)}\cdot V_{ask}^{(1)}}{V_{bid}^{(1)}+V_{ask}^{(1)}} 
+$$
+
+where $P$ and $V$ denote price and volume at Level 1, respectively.
+
+Our target variable—realized volatility—was constructed by aggregating log returns over each `time_id`. Log returns were derived using the WAP, given by: $$
+r_t = \log{(\text{WAP}_t)} - \log{(\text{WAP}_{t-1})}
+$$
+
+Due to the non-sequential nature of `time_id`s, return-based calculations were constrained to within individual `time_id`s only. This design choice preserves the integrity of within-segment volatility dynamics and avoids false assumptions of temporal continuity.
+
+Missing WAP values led to undefined returns; in such cases, we replaced NaN log returns with 0, effectively indicating no price movement. While simplistic, this imputation reflects the common assumption in high-frequency settings that missing ticks represent moments of inactivity. We acknowledge that this may understate micro-level volatility, but it ensures computational tractability and model compatibility.
+
+Each `time_id` was into 20-second intervals, chosen to align with real-time decision horizons in high-frequency trading. Realised volatility over each 20-second window was computed as the square root of the sum of squared log returns: $$
+RV_{[t,t+20]} = \sqrt{\sum_{i=t}^{t+19} r_i^2}
+$$This approach captures short-term market turbulence while smoothing out momentary spikes.
+
+```{python}
+def compute_wap(df):
+    """Compute Weighted Average Price (WAP) from top-of-book quotes."""
+    return (df['bid_price1'] * df['ask_size1'] +
+            df['ask_price1'] * df['bid_size1']) / (df['bid_size1'] + df['ask_size1'])
+
+def compute_log_returns(wap_series):
+    """Compute log returns, replacing NaNs (from diff) with 0."""
+    return np.log(wap_series).diff().fillna(0)
+  
+def compute_realized_volatility(returns, window_size=20):
+    """
+    Compute realized volatility over rolling windows (default 20 seconds).
+    Assumes input `returns` is a time-ordered Series per time_id.
+    Returns a Series of realized volatility values.
+    """
+    return returns.rolling(window_size).apply(lambda x: np.sqrt(np.sum(x**2)), raw=True).dropna()
+```
+
+## Feature Engineering
+
+To ensure a fair model comparison, we constructed a unified feature set using only Level 1 and Level 2 order book data, targeting early indicators of short-term volatility. Each feature class reflects a distinct mechanism driving price instability.
+
+1\. **Volatility Memory**:
+
+Rolling standard deviations of WAP log returns (1–5s) capture short-term persistence in return variability—crucial for anticipating clustered volatility.
+
+2\. **Price Momentum and Directionality**:
+
+Lagged WAP values and first differences model emerging directional trends. A rolling trend estimate over 5s highlights sustained drifts preceding volatility spikes.
+
+3\. **Microstructure Frictions**:
+
+Spread levels and deltas indicate rising execution risk and liquidity withdrawal—early signals of market stress.
+
+4\. **Latent liquidity and Order Book Pressure**:
+
+Imbalance velocity, noise ratios, and volume-weighted volatility reveal hidden stress in order flow. These nonlinear signals are particularly effective for tree-based models.
+
+```{python}
+def add_return_features(df):
+    for i in range(1, 6):
+        df[f'log_ret_std_{i}'] = df['log_ret'].shift(1).rolling(window=i, min_periods=1).std()
+    return df
+
+def add_wap_features(df):
+    for lag in range(1, 6):
+        df[f'wap_lag_{lag}'] = df['WAP'].shift(lag)
+        df[f'wap_delta_{lag}'] = df['WAP'] - df[f'wap_lag_{lag}']
+    df['wap_trend_5s'] = df[[f'wap_delta_{i}' for i in range(1, 6)]].mean(axis=1)
+    return df
+
+def add_spread_features(df):
+    df['spread'] = (df['ask_price1'] - df['bid_price1']) / df['ask_price1']
+    for lag in range(1, 6):
+        df[f'spread_lag_{lag}'] = df['spread'].shift(lag)
+        df[f'spread_delta_{lag}'] = df['spread'] - df[f'spread_lag_{lag}']
+    return df
+
+def add_liquidity_features(df):
+    df['liquidity_shock'] = df['bid_size1'].rolling(5).std() / df['bid_size1'].rolling(20).mean()
+    df['imbalance_velocity'] = ((df['bid_size1'] - df['ask_size1']) / (df['bid_size1'] + df['ask_size1'])).diff().rolling(3).mean()
+    df['vol_weighted_vol'] = df['log_ret'].abs() * df['bid_size1'].rolling(10).sum()
+    df['noise_ratio'] = df['ask_price1'].diff().abs() / df['WAP'].diff().abs().rolling(5).std()
+    df['hidden_liquidity'] = (df['bid_size2'] + df['ask_size2']) / (df['bid_size1'] + df['ask_size1'])
+    return df
+```
+
+# Model Candidates
+
+In selecting our candidate models, we aimed to span a large spectrum of volatility forecasting paradigms—comparing advanced machine learning to a traditional benchmark EGARCH, with simpler models chosen to provide context for incremental gains and diagnostic insight.
+
+------------------------------------------------------------------------
+
+**Machine Learning Models: Capturing Nonlinear Microstructure Dynamics**
+
+-   **LightGBM** (@ke2017): A fast, memory-efficient gradient booster using leaf-wise growth and histogram-based binning—well-suited to high-dimensional, sparse order book signals.
+
+-   **XGBoost** (@chen2016): A widely used gradient booster with level-wise tree construction and strong regularisation.
+
+Both models target complex, transient patterns characteristic of short-horizon volatility.
+
+------------------------------------------------------------------------
+
+**Reference Models: Interpretability and Diagnostic Insight**
+
+1.  **Random Forest** (@breiman2001random): An ensemble of decorrelated trees offering a non-boosted baseline. Its comparison to LightGBM and XGBoost isolates the contribution of boosting.
+
+2.  **Huber Regression** (@feng2022statistical): A robust linear model tested for its ability to extract stable relationships from noisy microstructure features.
+
+# Model Training and Testing
+
+## Machine Learning Models
+
+We developed a time-consistent training pipeline tailored to high-frequency volatility prediction (see Appendix A for pipeline). It enforces no information leakage, supports lag-based features, and is robust to common pathologies in order book data.
+
+**Data Imputation and Preprocessing**
+
+Log and ratio transformations often produced infinities. We treated these as missing values, then applied forward- and back-filling within each `time_id`. Remaining gaps were filled with zero to preserve continuity without introducing noise.
+
+```{python}
+# Function that creates all features defined above at once 
+def engineer_features(df):
+    df = add_return_features(df)
+    df = add_wap_features(df)
+    df = add_spread_features(df)
+    df = add_liquidity_features(df)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    return df.ffill().bfill().fillna(0)
+```
+
+**Time-Aware Splitting**
+
+Each `time_id` was split by `seconds_in_bucket`:
+
+-   First 64% → training
+
+-   Next 16% → validation
+
+-   Final 20% → testing
+
+The first 5 seconds were excluded from all sets to avoid lookahead in lagged features.
+
+```{python}
+# Function for splitting into train/val/test sets 
+def split_data(df, feature_cols, target_col='log_ret'):
+    df = df[df['seconds_in_bucket'] >= 5].reset_index(drop=True)
+    train_val_mask = df['seconds_in_bucket'] <= 480
+    test_mask = df['seconds_in_bucket'] > 480
+    train_mask = df['seconds_in_bucket'] <= 480 * 0.8
+    val_mask = (df['seconds_in_bucket'] > 480 * 0.8) & train_val_mask
+
+    return (
+        df[train_mask][feature_cols], df[train_mask][target_col],
+        df[val_mask][feature_cols], df[val_mask][target_col],
+        df[test_mask][feature_cols], df[test_mask][target_col],
+        df[test_mask]
+    )
+```
+
+**Model Configuration** All tree-based models used shallow depths (`max_depth=5`) and conservative learning rates (`0.03`) to limit overfitting on noisy signals. Gradient boosting models were tuned with early stopping, while Huber regression used default robustness settings. All models followed a common parameter structure:
+
+```{python}
+# Consistent parameters to feed in each model, based on theory 
+BASE_PARAMS = {
+    "lightgbm": {
+        "learning_rate": 0.03,
+        "num_leaves": 31,
+        "max_depth": 5,
+        "min_data_in_leaf": 20,
+        "feature_fraction": 0.8,
+        "bagging_freq": 10,
+        "verbosity": -1,
+        "lambda_l2": 0
+    },
+    "xgboost": {
+        'objective': 'reg:squarederror',
+        'eval_metric': 'mae',
+        "learning_rate": 0.03,
+        "max_depth": 5,
+        "min_child_weight": 5,
+        "subsample": 0.8
+    },
+    "random_forest": {
+        "max_depth": 5,
+        "min_samples_leaf": 20,
+        "n_estimators": 300
+    },
+    "huber": {
+        "epsilon": 1.35, 
+        "max_iter": 500
+    }
+}
+```
+
+During evaluation, each model predicted log returns over the final 120 seconds of each `time_id`, grouped into six 20-second windows. Realised volatility was computed per window and aggregated to evaluate model performance.
+
+## EGARCH Model
+
+The EGARCH(1,1,1) model was trained on 80% of raw log returns and tested on the final 20% (see Appendix B for training pipeline). Returns were scaled by $10^4$ to improve numerical stability. The model specification included:
+
+-   GARCH ($1$): Capturing volatility persistence.
+
+-   ARCH ($1$): Accounting for immediate return shocks.
+
+-   Asymmetric term ($1$): Leverage effects in volatility response.
+
+    ::: callout-warning
+    Despite stabilisation efforts, convergence issues occasionally occurred—reflecting the fragility of parametric models on irregular, heavy-tailed high-frequency data.
+    :::
+
+# Evaluation Metrics
+
+Model performance was assessed using three key metrics: **Root Mean Squared Error (RMSE)**, **Mean Absolute Error (MAE)**, and **Mean Directional Accuracy (MDA)**.
+
+-   **RMSE** (@rmse-mae) amplifies large errors, making it ideal for risk-aware applications where major mispredictions could lead to disruptive trades.
+
+-   **MAE** (@rmse-mae) offers a noise-tolerant alternative by averaging absolute deviations, better reflecting performance under typical high-frequency noise.
+
+-   **MDA** (@vishweda_mda) evaluates whether the model correctly predicts the *direction* of volatility changes—crucial for anticipating market regime shifts and informing position management.
+
+In addition to accuracy, we also recorded prediction times, as latency is a critical constraint in high-frequency settings
+
+```{python}
+# Newly defined MDA function
+def calculate_mda(actual, predicted):
+    
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    
+    actual_diff = np.diff(actual)
+    actual_signs = np.sign(actual_diff)
+    predicted_diff = np.diff(predicted)
+    predicted_signs = np.sign(predicted_diff)
+    
+    num_correct = np.sum(actual_signs == predicted_signs)
+    mda = num_correct / (len(actual) - 1)
+    
+    return mda
+```
+
+# Results
+
+Our evaluation revealed consistent and substantial performance differences across forecasting models. @fig-metrics summarises predictive accuracy (RMSE, MAE), directional correctness (MDA), and inference latency, averaged across all time_ids in the test set.
+
+------------------------------------------------------------------------
+
+**Machine Learning Models Outperform Traditional Approaches**
+
+Among all models tested, LightGBM delivered the best overall performance, achieving the lowest RMSE ($0.000091$) and MAE ($0.000066$)—representing over 99% error reduction relative to EGARCH. It also attained the highest directional accuracy (87.42%), indicating strong predictive skill in capturing both the magnitude and direction of short-term volatility movements.
+
+In contrast, EGARCH performed weakest across all metrics: RMSE and MAE were orders of magnitude higher, and directional accuracy fell to 49.45%, below the level of random guessing. This gap highlights the limitations of traditional econometric models when applied to high-frequency, non-stationary data streams.
+
+All machine learning models—including XGBoost, Random Forest, and Huber Regression—consistently outperformed EGARCH across accuracy and directionality metrics.
+
+------------------------------------------------------------------------
+
+**Comparative Insights: Boosting, Bagging, and Linear Robustness**
+
+While XGBoost shares the gradient boosting framework of LightGBM, its performance lagged significantly—RMSE was 70% higher, and MAE 77% higher—due in part to its level-wise tree construction, which struggled to isolate sharp local fluctuations in the order book.
+
+Random Forest, included for its non-boosted architecture, achieved solid performance (RMSE: $0.000115$, MDA: $81.64\%$). Its noise resilience confirmed the stabilising effect of bagging. However, its high inference latency ($0.904$ms) limits real-time applicability, though it served well as a diagnostic comparator to LightGBM and XGBoost.
+
+Huber Regression, the only linear model tested, offered the fastest inference speed ($0.050$ ms) and moderate directional accuracy ($70.85\%$), but struggled to model the nonlinear, transient dynamics of high-frequency volatility (RMSE: $0.000184$). Its inclusion helped validate the necessity of nonlinear learners in this domain.
+
+------------------------------------------------------------------------
+
+From a deployment perspective, LightGBM struck the best balance between predictive performance and latency (0.157 ms), outperforming all other models on speed-accuracy trade-offs (see @fig-predictiontime). XGBoost offered neither leading accuracy nor latency, Random Forest traded accuracy for latency, and Huber Regression, though fastest, could not model volatility complexity.
+
+```{python}
+#| warning: false
+#| message: false
+#| fig-align: center
+#| label: fig-metrics
+
+# Load data
+final_metrics = pd.read_csv("model_results/final_metrics.csv")
+avg_metrics_df = final_metrics.groupby("model")[["rmse", "mae", "mda", "prediction_time"]].mean().reset_index()
+
+# Setup
+model_order = ["egarch", "huber", "lightgbm", "random_forest", "xgboost"]
+metrics = ["rmse", "mae"]
+colors = {"rmse": "#f3e9d2", "mae": "#01426a", "mda": "#76c7c0"}
+
+# Sort models
+avg_metrics_df["model"] = pd.Categorical(avg_metrics_df["model"], categories=model_order, ordered=True)
+avg_metrics_df = avg_metrics_df.sort_values("model")
+
+# Create figure
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 8), gridspec_kw={'width_ratios': [3.5, 2]})
+
+# --- LEFT: RMSE + MAE ---
+x = np.arange(len(model_order))
+width = 0.35
+rmse_vals = avg_metrics_df["rmse"].values
+mae_vals = avg_metrics_df["mae"].values
+
+# Bars
+bar1 = ax1.bar(x - width/2, rmse_vals, width, label='RMSE', color=colors["rmse"])
+bar2 = ax1.bar(x + width/2, mae_vals, width, label='MAE', color=colors["mae"])
+
+# Log scale and grid
+ax1.set_yscale('log')
+ax1.set_xticks(x)
+ax1.set_xticklabels(model_order, rotation=15)
+ax1.set_title("Model RMSE & MAE (log scale)", fontsize=14, pad=25)
+ax1.set_ylabel("Score (log)")
+ax1.set_xlabel("Model")
+ax1.legend()
+ax1.grid(True, axis='y', linestyle='--', linewidth=0.5)
+ax1.grid(True, axis='x', linestyle='--', linewidth=0.5)
+
+# Labels
+for bars in [bar1, bar2]:
+    for bar in bars:
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2, height * 1.05,
+                 f"{height:.2e}", ha='center', va='bottom', fontsize=8)
+
+# Highlight best
+totals = rmse_vals + mae_vals
+best_idx = np.argmin(totals)
+avg_y = (rmse_vals[best_idx] + mae_vals[best_idx]) / 2
+ax1.scatter(best_idx, avg_y * 1.7, s=220, color="crimson", alpha=0.3, zorder=5)
+ax1.scatter(best_idx, avg_y * 1.7, s=80, color="crimson", zorder=6, edgecolor='white', linewidth=1)
+ax1.text(best_idx, avg_y * 2.2, "Best Overall", ha='center', va='bottom',
+         fontsize=9, fontweight='bold', color="crimson", backgroundcolor="white")
+
+# --- RIGHT: MDA ---
+mda_vals = avg_metrics_df["mda"].values
+bar3 = ax2.bar(x, mda_vals, width=0.5, color=colors["mda"])
+
+ax2.set_xticks(x)
+ax2.set_xticklabels(model_order, rotation=15)
+ax2.set_title("Directional Accuracy (MDA)", fontsize=14, pad=25)
+ax2.set_ylabel("MDA Score")
+ax2.set_xlabel("Model")
+ax2.grid(True, axis='y', linestyle='--', linewidth=0.5)
+ax2.grid(True, axis='x', linestyle='--', linewidth=0.5)
+
+# Labels
+for bar in bar3:
+    height = bar.get_height()
+    ax2.text(bar.get_x() + bar.get_width()/2, height * 1.01,
+             f"{height:.2%}", ha='center', va='bottom', fontsize=8)
+
+# Highlight best
+best_mda_idx = np.argmax(mda_vals)
+ax2.scatter(best_mda_idx, mda_vals[best_mda_idx] * 1.1, s=220, color="crimson", alpha=0.3, zorder=5)
+ax2.scatter(best_mda_idx, mda_vals[best_mda_idx] * 1.1, s=80, color="crimson", zorder=6, edgecolor='white', linewidth=1)
+ax2.text(best_mda_idx, mda_vals[best_mda_idx] * 1.15, "Best MDA", ha='center', va='bottom',
+         fontsize=9, fontweight='bold', color="crimson", backgroundcolor="white")
+
+# Final layout
+fig.tight_layout()
+plt.show()
+plt.close()
+```
+
+```{python}
+#| label: fig-predictiontime
+
+# Prepare data
+df_time = avg_metrics_df[['model', 'prediction_time']].copy()
+df_time['relative_to_egarch'] = df_time['prediction_time'] / df_time[df_time['model'] == 'egarch']['prediction_time'].values[0]
+df_time['relative_to_egarch'] = df_time['relative_to_egarch'].apply(lambda x: f"{x:.2f}x")
+df_time['prediction_time'] = df_time['prediction_time'].apply(lambda x: f"{x:.2f}s")
+df_time = df_time.sort_values('prediction_time').reset_index(drop=True)
+
+# Create figure
+fig, ax = plt.subplots(figsize=(8, 3))
+ax.axis('off')
+
+# Create table
+table = ax.table(
+    cellText=df_time.values,
+    colLabels=["Model", "Prediction Time", "Relative to EGARCH"],
+    loc='center',
+    cellLoc='center'
+)
+
+# Style table
+table.auto_set_font_size(False)
+table.set_fontsize(11)
+table.scale(1, 1.5)  # Adjust cell padding
+
+# Header style
+for (row, col), cell in table.get_celld().items():
+    if row == 0:  # Header row
+        cell.set_text_props(weight='bold')
+        cell.set_facecolor('#f3e9d2')  # Light gray header
+    cell.set_edgecolor('#dddddd')  # Border color
+
+plt.tight_layout()
+plt.show()
+```
+
+# Hyperparameter Tuning
+
+Given its strong out-of-the-box performance, we further refined **LightGBM** through systematic hyperparameter tuning aimed at maximising both predictive accuracy and robustness under real-world, high-frequency conditions.
+
+To achieve this, we developed a robust and time-aware tuning pipeline combining three core components:
+
+1.  **Temporal Integrity with `TimeSeriesSplit` Cross Validation**
+
+We employed **`TimeSeriesSplit` (@skl**earnTimeSeriesSplit) cross-validation to preserve chronological structure and avoid lookahead bias. Each training fold strictly preceded its corresponding validation set, replicating realistic forecasting conditions. This setup ensured that performance gains were genuine and generalisable—not artefacts of data leakage.
+
+2.  **Efficient Hyperparameter Optimisation with `optuna`**
+
+Hyperparameters were tuned using **`optuna`**, an efficient Bayesian optimisation framework (@akiba2019optuna) . Compared to traditional grid or random search, Optuna accelerated convergence and reduced computational cost via:
+
+::: callout-note
+-   **Adaptive learning** that targeted high-performing regions,
+
+-   **Early stopping** for poor-performing trials, and
+
+-   **Parallel execution** across trials.
+:::
+
+This allowed broader, deeper exploration of LightGBM’s parameter space without compromising evaluation rigor.
+
+3.  Stable Evaluation via RMSE averaging
+
+Performance during tuning was assessed using average RMSE across five sequential folds. This smoothed out the impact of volatile market intervals and provided a stable metric for guiding the search process.
+
+```{python}
+#| eval: false
+
+# LightGBM model 
+df_general = pd.read_csv("vol_subsets/df_general.csv")
+X_all, y_all = [], []
+for (stock, time_id), df_subset in df_general.groupby(['stock_name', 'time_id']):
+        df = df_subset.copy()
+        df['WAP'] = compute_wap(df)
+        df['log_ret'] = compute_log_returns(df['WAP'])
+        df = engineer_features(df)
+        
+        feature_cols = [f'log_ret_std_{i}' for i in range(1, 6)] + \
+        [f'wap_lag_{i}' for i in range(1, 6)] + \
+        [f'wap_delta_{i}' for i in range(1, 6)] + \
+        ['wap_trend_5s'] + ['spread'] + \
+        [f'spread_lag_{i}' for i in range(1, 6)] + \
+        [f'spread_delta_{i}' for i in range(1, 6)] + \
+        ['liquidity_shock', 'imbalance_velocity', 'vol_weighted_vol', 'noise_ratio', 'hidden_liquidity']
+        
+        X_train, y_train, *_ = split_data(df, feature_cols)
+        X_all.append(X_train)
+        y_all.append(y_train)
+
+X_train_all = pd.concat(X_all).sort_index()
+y_train_all = pd.concat(y_all).sort_index()
+
+# TimeseriesSplit with optuna
+def objective(trial):
+    params = {
+        'objective': 'regression',
+        'metric': 'rmse',
+        'verbosity': -1,
+        'boosting_type': 'gbdt',
+        'num_leaves': trial.suggest_categorical('num_leaves', [20, 31, 40, 50]),
+        'max_depth': trial.suggest_int('max_depth', 3, 7),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.05, step=0.01),
+        'feature_fraction': trial.suggest_float('feature_fraction', 0.7, 1.0, step=0.1),
+        'bagging_fraction': trial.suggest_float('bagging_fraction', 0.7, 1.0, step=0.1),
+        'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 20, 60, step=10),
+        'lambda_l1': trial.suggest_float('lambda_l1', 0.0, 1.0, step=0.1),
+        'lambda_l2': trial.suggest_float('lambda_l2', 0.0, 1.0, step=0.1),
+    }
+
+    tscv = TimeSeriesSplit(n_splits=5)
+    scores = []
+    for train_idx, val_idx in tscv.split(X_train_all):
+        X_t, X_v = X_train_all.iloc[train_idx], X_train_all.iloc[val_idx]
+        y_t, y_v = y_train_all.iloc[train_idx], y_train_all.iloc[val_idx]
+
+        lgb_train = lgb.Dataset(X_t, y_t)
+        lgb_valid = lgb.Dataset(X_v, y_v, reference=lgb_train)
+
+        model = lgb.train(
+            params,
+            lgb_train,
+            valid_sets=[lgb_valid],
+            num_boost_round=300,
+            callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)])
+
+        y_pred = model.predict(X_v, num_iteration=model.best_iteration)
+        score = mean_squared_error(y_v, y_pred)
+        scores.append(score)
+
+    return np.mean(scores)
+  
+study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42))
+study.optimize(objective, n_trials=50, show_progress_bar=True)
+```
+
+# Feature Selection
+
+We applied SHAP (SHapley Additive Explanations) (@louhichi2023shapley) to the optimised LightGBM model to assess feature contributions across the test set. @fig-shap displays the top ten features ranked by mean absolute SHAP value.
+
+```{python}
+#| eval: false
+# Final model fit using best parameters
+best_params = study.best_params
+best_params.update({'objective': 'regression', 'metric': 'rmse', 'verbosity': -1})
+
+# Final model fit on all data (no early stopping)
+model = lgb.train(
+    best_params,
+    lgb.Dataset(X_train_all, label=y_train_all),
+    num_boost_round=300, 
+    callbacks=[lgb.log_evaluation(0)]
+)
+
+# SHAP Analysis
+explainer = shap.Explainer(model)
+shap_values = explainer(X_train_all)
+
+shap_df = pd.DataFrame(shap_values.values, columns=feature_cols)
+shap_mean = shap_df.abs().mean().sort_values(ascending=False)
+```
+
+------------------------------------------------------------------------
+
+**Microstructure Features Dominate**
+
+The model's predictions were overwhelmingly driven by ultra-recent WAP (weighted average price) differentials, particularly `wap_delta_1`, which had a SHAP impact over 10× higher than any other feature. This confirms our hypothesis: short-term volatility is governed by immediate order book imbalances, not lagged returns.
+
+Successive `wap_delta_k` features (2–5) were also influential, indicating that the model captures fine-grained price dynamics akin to momentum and acceleration at millisecond resolution—critical for forecasting volatility spikes.
+
+------------------------------------------------------------------------
+
+**Liquidity and Noise Signals**
+
+Features such as `vol_weighted_vol` and `noise_ratio` contributed meaningfully, reflecting liquidity-sensitive volatility and the destabilising effect of conflicting quote signals. These reinforce the role of order flow quality in anticipating abrupt market movements.
+
+------------------------------------------------------------------------
+
+**Supporting Context**
+
+Lower-ranked features, including `wap_lag_1` and `spread_delta_1`, offered contextual information but had substantially less influence. Their limited contribution underscores a key result: effective volatility prediction in high-frequency settings depends primarily on instantaneous, not historical, signals.
+
+```{python}
+#| label: fig-shap
+shap_mean = pd.read_csv("shap_mean_importance.csv", index_col=0, header=None)
+shap_mean.columns = ['mean_abs_shap']
+top_10_df = shap_mean.sort_values(by='mean_abs_shap', ascending=False).head(10)
+top_10_df = top_10_df[::-1]
+
+# Plot SHAP values
+fig, ax = plt.subplots(figsize=(8, 6))
+bars = ax.barh(top_10_df.index, top_10_df['mean_abs_shap'], color="#003366")
+
+# Add text at the end of bars
+offset = top_10_df['mean_abs_shap'].max() * 0.02
+for bar, value in zip(bars, top_10_df['mean_abs_shap']):
+    ax.text(bar.get_width() + offset, bar.get_y() + bar.get_height()/2,
+            f"{value:.2e}", va='center', ha='left', fontsize=10)
+
+# Style
+ax.set_title('Top 10 Most Important Features (SHAP)', fontsize=16, weight='bold')
+ax.set_xlabel('Mean |SHAP value|', fontsize=12)
+ax.set_ylabel('Feature', fontsize=12)
+ax.set_facecolor('white')
+ax.grid(axis='x', linestyle='--', color='lightgray')
+ax.spines[['top', 'right']].set_visible(False)
+fig.tight_layout()
+plt.show()
+```
+
+# Robustness Check and Generalisability
+
+To assess generalisation, we evaluated LightGBM on disjoint high- and low-volatility subsets (`df_high`, `df_low`) derived from the stock dataset initially.
+
+The model performed strongly on `df_low`, exceeding its full-sample baseline in both RMSE and MAE—demonstrating effective generalisation under stable conditions. In contrast, performance declined on `df_high`, reflecting the inherent difficulty of capturing sharp, irregular volatility spikes using static-tree models optimised on broader market conditions (see Appendix C for metrics).
+
+Despite this drop, LightGBM retained operational utility, with results supporting its use as a core forecasting module in risk-aware trading systems operating in low- to moderate-volatility regimes.
+
+```{python}
+high_vol_metrics = pd.read_csv("model_results/high_rv_metrics.csv")
+low_vol_metrics = pd.read_csv("model_results/low_rv_metrics.csv")
+high_summary = high_vol_metrics[['rmse', 'mae', 'mda']].mean().to_frame(name='High Volatility')
+low_summary = low_vol_metrics[['rmse', 'mae', 'mda']].mean().to_frame(name='Low Volatility')
+summary_table = pd.concat([high_summary, low_summary], axis=1)
+print(summary_table)
+```
+
+# ECHOVOL20 App Deployment
+
+EchoVol20 is a high-performance volatility prediction app tailored for traders navigating fast-paced financial markets. Built on advanced machine learning, it provides accurate short-term volatility forecasts using high-frequency order book data.
+
+As shown in @fig-predictionapp, the interface is organised into three intuitive tabs:
+
+1.  **Tab 1: Data Explorer**. Users can load built-in stock datasets or upload their own CSV/Excel files. For built-in data, a selected datetime reveals a live snapshot of order book microstructure and recent price action, with an adjustable lookback window. Uploaded data is automatically parsed and visualised for the most recent 20 seconds.
+
+2.  **Tab 2: Volatility Forecasting**. Powered by our tuned LightGBM model, this tab allows users to define both lookback and forecast horizons. The interactive plot displays actual and predicted volatility with confidence bands and regime thresholds. EchoVol20 also suggests trade positioning and supports CSV export for integration into trading systems.
+
+3.  **Tab 3: Risk Calculator.** Integrating the latest forecast, users can simulate trading scenarios by adjusting inputs like capital, asset price, and position size—yielding instant, data-backed risk estimates.
+
+With seamless visualization, real-time forecasting, regime detection, and integrated risk management, EchoVol20 is more than a prediction tool—it’s a comprehensive trading assistant. Ideal for day traders, quantitative analysts, and portfolio managers, EchoVol20 turns complex volatility data into clear, actionable guidance.
+
+![Overview of EchoVol20: (1) Order Book Microstructure Visualization with dynamic lookback window and datetime selection; (2) Volatility Forecasting with LightGBM predictions, interactive plots, regime classification, strategy recommendations, and CSV export option; and (3) Risk Calculator that incorporates predicted volatility to simulate position-level risk based on trader-defined inputs.](images/Tab%201%20Dashboard.png){#fig-predictionapp fig-align="center"}
+
+# Conclusion
+
+This report set out to evaluate whether machine learning models trained on high-frequency order book data can outperform traditional econometric approaches like EGARCH in forecasting short-term volatility. The findings clearly support this hypothesis: LightGBM consistently outperformed all benchmarks, including XGBoost and EGARCH, across multiple evaluation metrics.
+
+The underperformance of EGARCH stems from its reliance on stationarity assumptions and inability to adapt to the irregular, non-linear dynamics of high-frequency markets. In contrast, LightGBM’s leaf-wise growth and histogram-based learning enabled fine-grained adaptation to abrupt volatility shifts, leveraging complex interactions in microstructural features.
+
+These results suggest a paradigm shift: modern tree-based machine learning models, when properly tuned and engineered, offer a compelling alternative to traditional volatility models, especially in low-latency trading environments.
+
+Nevertheless, LightGBM is not without limitations—it remains sensitive to noise, computationally intensive during feature generation, and less responsive to exogenous shocks like macroeconomic events. Future work could explore hybrid models that combine the real-time responsiveness of LightGBM with macro-aware components or regime-switching mechanisms.
+
+# Appendix
+
+### A: Train and predict pipeline for ML models
+
+```{python}
+#| eval: false
+import lightgbm as lgb
+import xgboost as xgb 
+from sklearn.linear_model import HuberRegressor
+from sklearn.ensemble import RandomForestRegressor
+
+def train_and_predict(X_train, y_train, X_val, y_val, X_test, model_type='lightgbm', model_params=None):
+    params = model_params or {}
+    if model_type == 'lightgbm':
+        train_set = lgb.Dataset(X_train, label=y_train)
+        val_set = lgb.Dataset(X_val, label=y_val)
+        model = lgb.train(params, train_set, num_boost_round=300,
+                          valid_sets=[val_set], 
+                          callbacks=[lgb.early_stopping(20, verbose=0), lgb.log_evaluation(0)])
+        y_pred = model.predict(X_test)
+
+    elif model_type == 'xgboost':
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        model = xgb.train(params, dtrain, num_boost_round=300,
+                          evals=[(dval, "validation")], early_stopping_rounds=20, verbose_eval=False)
+        y_pred = model.predict(xgb.DMatrix(X_test))
+
+    elif model_type == 'random_forest':
+        model = RandomForestRegressor(**params)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+    elif model_type == 'huber':
+        model = HuberRegressor(**params)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+    else:
+        raise ValueError("Unsupported model type.")
+    return model, y_pred
+```
+
+```{python}
+#| eval: false
+import time
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+def run_model_pipeline(data, model_type='lightgbm'):
+    # create lists to store 
+    all_rv_dfs = []
+    model_metrics = []
+
+    for (stock, time_id), df_subset in data.groupby(['stock_name', 'time_id']):
+        df = df_subset.copy()
+        df['WAP'] = compute_wap(df)
+        df['log_ret'] = compute_log_returns(df['WAP'])
+        df = engineer_features(df)
+        
+        feature_cols = [f'log_ret_std_{i}' for i in range(1, 6)] + \
+        [f'wap_lag_{i}' for i in range(1, 6)] + \
+        [f'wap_delta_{i}' for i in range(1, 6)] + \
+        ['wap_trend_5s'] + ['spread'] + \
+        [f'spread_lag_{i}' for i in range(1, 6)] + \
+        [f'spread_delta_{i}' for i in range(1, 6)] + \
+        ['liquidity_shock', 'imbalance_velocity', 'vol_weighted_vol', 'noise_ratio', 'hidden_liquidity']
+        
+        try:
+            # Split
+            X_train, y_train, X_val, y_val, X_test, y_test, test_df = split_data(df, feature_cols)
+
+            if len(X_train) < 10 or len(X_test) < 10:
+                continue
+                
+            # Start training + prediction timer
+            start_time = time.time()
+            
+            # Train
+            model, y_pred = train_and_predict(X_train, y_train, X_val, y_val, X_test, 
+                                              model_type=model_type,
+                                              model_params=BASE_PARAMS[model_type])
+            
+            end_time = time.time()
+            prediction_time = end_time - start_time # seconds 
+            results_df = pd.DataFrame({
+                'time_id': time_id,
+                'seconds_in_bucket': test_df['seconds_in_bucket'].values,
+                'y_true': y_test,
+                'y_pred': y_pred
+            })
+
+            full_range = pd.DataFrame({'seconds_in_bucket': np.arange(480, 600)})
+            results_df_filled = pd.merge(full_range, results_df, on='seconds_in_bucket', how='left').fillna(0)
+            results_df_filled['time_bucket'] = (results_df_filled['seconds_in_bucket'] - 480) // 20
+
+            actual_rv = results_df_filled.groupby('time_bucket')['y_true'].apply(lambda x: np.sqrt(np.sum(x**2)))
+            pred_rv = results_df_filled.groupby('time_bucket')['y_pred'].apply(lambda x: np.sqrt(np.sum(x**2)))
+
+            rv_df = pd.DataFrame({
+                'time_id': time_id,
+                'time_bucket': actual_rv.index,
+                'rv_actual': actual_rv.values,
+                'rv_predicted': pred_rv.values
+            })
+            all_rv_dfs.append(rv_df)
+
+            rmse = np.sqrt(mean_squared_error(actual_rv, pred_rv))
+            mae = mean_absolute_error(actual_rv, pred_rv)
+            mda = calculate_mda(actual_rv.values, pred_rv.values)
+            
+            model_metrics.append({
+                'time_id': time_id,
+                'rmse': rmse,
+                'mae': mae,
+                'mda': mda,
+                'prediction_time': prediction_time
+            })
+        except Exception as e:
+            print(f"Error in time_id {time_id}: {e}")
+            continue
+
+    return pd.concat(all_rv_dfs), pd.DataFrame(model_metrics)
+```
+
+```{python}
+#| eval: false
+all_metrics = []
+all_rv_preds = []
+
+for model_name in ['lightgbm', 'xgboost', 'random_forest', 'huber']:
+    print(f"Running {model_name} model...")
+    
+    rv_df, metrics_df = run_model_pipeline(
+        data=df_general, 
+        model_type=model_name
+    )
+    
+    rv_df['model'] = model_name
+    metrics_df['model'] = model_name
+    
+    all_rv_preds.append(rv_df)
+    all_metrics.append(metrics_df)
+```
+
+### B: Train and predict pipeline for EGARCH model
+
+```{python}
+#| eval: false
+from arch import arch_model
+
+all_rv_dfs = []
+model_metrics = []
+
+for (stock, time_id), df_subset in df_general.groupby(['stock_name', 'time_id']):
+    df = df_subset.copy()
+    
+    # Calculate WAP
+    df['WAP'] = compute_wap(df)
+    
+    # Calculate Log Returns from WAP 
+    df['log_ret'] = compute_log_returns(df['WAP'])
+    train_mask = (df['seconds_in_bucket'] <= 480)
+    test_mask = (df['seconds_in_bucket'] > 480)
+    
+    y_train = df[train_mask]['log_ret'].values
+    y_test = df[test_mask]['log_ret'].values
+    
+    # Scaled log returns to prevent values from failing to be read due to small magnitude
+    scaling_factor = 1e4
+    y_train_scaled = y_train * 1e4
+
+    model = arch_model(
+            y_train_scaled,
+            mean='Constant',  # Simple constant mean
+            vol='EGARCH',
+            p=1,  # ARCH term order
+            o=1,  # Asymmetry term order
+            q=1,  # GARCH term order
+            dist='normal'  
+        )
+    # Start training + prediction timer
+    start_time = time.time()
+    
+    res = model.fit(update_freq=0, disp='off', options={'maxiter': 500})
+        
+    if not res.convergence_flag == 0:
+        print(f"Model failed to converge for time_id {time_id}")
+        continue
+
+    # Forecast volatility
+    forecasts = res.forecast(
+        horizon=len(y_test),
+        method='simulation',
+        reindex=False
+    )
+    mean_forecast = forecasts.mean.values[-1, :]
+    
+    end_time = time.time()
+    prediction_time = end_time - start_time # seconds 
+        
+    results_df = pd.DataFrame({
+        'time_id': time_id,
+        'seconds_in_bucket': df[test_mask]['seconds_in_bucket'].values,
+        'y_true': y_test,
+        'y_pred': mean_forecast
+    })
+
+    full_range = pd.DataFrame({'seconds_in_bucket': np.arange(480, 600)})
+    results_df_filled = pd.merge(full_range, results_df, on='seconds_in_bucket', how='left')
+    results_df_filled['y_pred'] = results_df_filled['y_pred'].fillna(0)
+    results_df_filled['y_true'] = results_df_filled['y_true'].fillna(0)
+
+    results_df_filled['time_bucket'] = (results_df_filled['seconds_in_bucket'] - 480) // 20
+    actual_rv = results_df_filled.groupby('time_bucket')['y_true'].apply(lambda x: np.sqrt(np.sum(x**2)))
+    pred_rv = results_df_filled.groupby('time_bucket')['y_pred'].apply(lambda x: np.sqrt(np.sum(x**2))) / 1e4
+
+    rv_df = pd.DataFrame({
+        'time_id': time_id,
+        'time_bucket': actual_rv.index,
+        'rv_actual': actual_rv.values,
+        'rv_predicted': pred_rv.values,
+        'model': 'egarch'
+    })
+
+    all_rv_dfs.append(rv_df)
+
+    rmse = np.sqrt(mean_squared_error(actual_rv, pred_rv))
+    mae = mean_absolute_error(actual_rv, pred_rv)
+    mda = calculate_mda(actual_rv.values, pred_rv.values)
+
+    # Store metrics
+    model_metrics.append({
+        'time_id': time_id,
+        'rmse': rmse,
+        'mae': mae,
+        'mda': mda,
+        'prediction_time': prediction_time,
+        'model': 'egarch'
+    })
+# Finalize EGARCH DataFrames
+egarch_rv_df = pd.concat(all_rv_dfs, ignore_index=True)
+egarch_metrics_df = pd.DataFrame(model_metrics)
+```
+
+### C: Robustness check on df_high and df_low
+
+```{python}
+#| eval: false
+# Code for Robustness check of final model
+def final_model_pipeline(df_input):
+    generalisability_metrics = []
+    
+    for (stock, time_id), df_subset in df_input.groupby(['stock_name', 'time_id']):
+        df = df_subset.copy()
+        df['WAP'] = compute_wap(df)
+        df['log_ret'] = compute_log_returns(df['WAP'])
+
+        # Features selected through SHAP analysis
+        for lag in range(1, 6):
+            df[f'wap_lag_{lag}'] = df['WAP'].shift(lag)
+            df[f'wap_delta_{lag}'] = df['WAP'] - df[f'wap_lag_{lag}']
+        df['wap_trend_5s'] = df[[f'wap_delta_{i}' for i in range(1, 6)]].mean(axis=1)
+        df['vol_weighted_vol'] = df['log_ret'].abs() * df['bid_size1'].rolling(10).sum()
+        df['noise_ratio'] = df['ask_price1'].diff().abs() / df['WAP'].diff().abs().rolling(5).std()
+        df['spread'] = (df['ask_price1'] - df['bid_price1']) / df['ask_price1']
+        df['spread_lag_1'] = df['spread'].shift(1)
+        df['spread_delta_1'] = df['spread'] - df[f'spread_lag_1']
+
+        
+        feature_cols = ['wap_lag_1', 'wap_trend_5s', 'spread_delta_1'] + \
+        [f'wap_delta_{i}' for i in range(1, 6)] + \
+        ['vol_weighted_vol', 'noise_ratio']
+
+        try:
+            # Split
+            X_train, y_train, X_val, y_val, X_test, y_test, test_df = split_data(df, feature_cols)
+
+            if len(X_train) < 10 or len(X_test) < 10:
+                continue
+
+            # Train
+            train_set = lgb.Dataset(X_train, label=y_train)
+            val_set = lgb.Dataset(X_val, label=y_val)
+            model = lgb.train(best_params, train_set, num_boost_round=300,
+                              valid_sets=[val_set], 
+                              callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)])
+            y_pred = model.predict(X_test)
+
+            results_df = pd.DataFrame({
+                'time_id': time_id,
+                'seconds_in_bucket': test_df['seconds_in_bucket'].values,
+                'y_true': y_test,
+                'y_pred': y_pred
+            })
+
+            full_range = pd.DataFrame({'seconds_in_bucket': np.arange(480, 600)})
+            results_df_filled = pd.merge(full_range, results_df, on='seconds_in_bucket', how='left').fillna(0)
+            results_df_filled['time_bucket'] = (results_df_filled['seconds_in_bucket'] - 480) // 20
+
+            actual_rv = results_df_filled.groupby('time_bucket')['y_true'].apply(lambda x: np.sqrt(np.sum(x**2)))
+            pred_rv = results_df_filled.groupby('time_bucket')['y_pred'].apply(lambda x: np.sqrt(np.sum(x**2)))
+
+            rmse = np.sqrt(mean_squared_error(actual_rv, pred_rv))
+            mae = mean_absolute_error(actual_rv, pred_rv)
+            mda = calculate_mda(actual_rv.values, pred_rv.values)
+
+            generalisability_metrics.append({
+                'time_id': time_id,
+                'rmse': rmse,
+                'mae': mae,
+                'mda': mda
+            })
+        except Exception as e:
+            print(f"Error in time_id {time_id}: {e}")
+            continue
+
+    return pd.DataFrame(generalisability_metrics)
+
+high_vol_metrics = final_model_pipeline(df_high)
+low_vol_metrics = final_model_pipeline(df_low)
+```
