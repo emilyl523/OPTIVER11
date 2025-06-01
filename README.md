@@ -33,18 +33,15 @@ The **EchoVol20** is a powerful tool designed to analyze stock market data and p
 ## 📂 File Requirements
 If uploading a custom dataset, ensure the file meets the following requirements:
 - **File Format**: CSV or Excel (`.csv`, `.xlsx`).
-- **Required Columns**:
-  - `timestamp`
-  - `bid_price1`, `ask_price1`
-  - `bid_size1`, `ask_size1`
+- Follow the same format as the `small_stock_data.csv`
 
 ---
 
 ## 🖥️ Installation
 1. Clone the repository:
     ```bash
-    git clone https://github.com/emilyl523/OPTIVER11/tree/main
-    cd volatility-prediction-app
+    git clone https://github.com/emilyl523/OPTIVER11/
+    ```
 
 2. Create a vitual environment:
 
