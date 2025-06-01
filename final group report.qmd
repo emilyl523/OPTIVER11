@@ -1,7 +1,7 @@
 ---
 title: "DATA3888_2025 Final Group Report"
 subtitle: "Predicting volatility"
-author: "..."
+author: "Charlie, Emily, Hoang, Gary, Seif, Xinping"
 date: "01-June-2025"
 jupyter: python3
 bibliography: references.bib
@@ -26,6 +26,8 @@ execute:
   freeze: false
 ---
 
+<https://github.com/emilyl523/OPTIVER11>
+
 # Executive Summary
 
 > Traditional volatility forecasting models like EGARCH, while statistically rigorous, struggle with the speed, noise, and complexity of modern high-frequency markets. As trading demands real-time responsiveness, reliance on lagged prices misses dynamic signals in live order book data.
@@ -34,17 +36,17 @@ This project investigates whether machine learning models trained on high-freque
 
 Results strongly favor machine learning: LightGBM reduced error by over $99\%$ versus EGARCH while delivering sub-millisecond prediction speed, ideal for real-time trading. SHAP analysis identified instantaneous price shifts and liquidity-weighted volatility as key drivers.
 
-These insights power ***EchoVol20,*** an interactive dashboard that forecasts volatility in real time. Users can upload order book data, visualize predictive features, and receive actionable volatility regime classifications. A built-in risk calculator transforms forecasts into position sizing guidance—bridging predictive power with practical trading decisions. This work affirms our hypothesis and delivers a deployable system embodying a fast, adaptive, real-time market risk forecasting paradigm.
+These insights power **EchoVol20**—an interactive dashboard that delivers real-time volatility forecasts using high-frequency order book data. Designed for rapid deployment, it embodies a fast, adaptive, and practical approach to short-term market risk prediction.
 
 # Introduction
 
-Volatility—the degree of variation in asset returns—is more than a statistical artefact; it underpins key decisions in derivative pricing, portfolio allocations, and risk management (@bhambu2025high). Yet in modern financial markets, where price dynamics unfold in miliseconds, volatility remains votoriously difficult to forecast. The consequences of misjudging it are severe:
+Volatility, the extent of variation in asset returns, plays a pivotal role in pricing derivatives, allocating portfolios, and managing risk (@bhambu2025high). Yet in modern markets—where prices shift in milliseconds—volatility remains exceptionally hard to forecast.
 
-> In 2024, a sudden surge in market uncertainty caused major losses for investment products that had been betting on calm market conditions—wiping out over \$4 billion in value within days (\@mackenzie2024traders). Events like this highlight the urgent need for better tools to predict when markets might become unstable.
+> In 2024, a sudden rise in market uncertainty led to over \$4 billion in losses for products positioned against volatility (@mackenzie2024traders). Events like this highlight the need for faster, more adaptive forecasting tools.
 
-Historically, volatility modelling has been dominated by the Generalised Autoregressive Conditional Heteroskedasticity (GARCH) models, which leverage patterns in historical return series. Extensions like the Exponential GARCH (EGARCH) improved upon this by accounting for the asymmetric impact of negative returns on future volatility (@nelson1991conditional). However, these models assume stationarity and rely on linear dynamics, limiting their effectiveness in high-frequency environments characterised by rapid regime shifts and nonlinear interactions (@mohammad2020dynamical).
+Historically, volatility modelling has been led by Generalised Autoregressive Conditional Heteroskedasticity (GARCH) models, which exploit patterns in past returns. Exponential GARCH (EGARCH) builds on this by incorporating asymmetries, such as the stronger impact of negative shocks on future volatility (@nelson1991conditional). However, these models assume stationarity and rely on linear dynamics, limiting their effectiveness in high-frequency environments characterised by rapid regime shifts and nonlinear interactions (@mohammad2020dynamical).
 
-The rise of high-frequency trading (HFT) has transformed volatility into a high-resolution challenge. Order books now stream real-time data on liquidity, price imbalances, and spread dynamics—rich, untapped signals that often precede volatility shocks (@abergel2016high). Machine learning (ML) models, with their ability to extract patterns from high-dimensional and noisy data, offer a promising alternative. But a key question remains:
+With the rise of high-frequency trading, volatility forecasting has become a high-resolution problem. Order book data now provides real-time signals—like price imbalances, liquidity shifts, and spread changes—that often precede volatility spikes (@abergel2016high). Machine learning (ML) models are well-suited to extract patterns from such high-dimensional, noisy data.
 
 ::: callout-important
 **Research Question**
@@ -60,7 +62,7 @@ To answer this, we conduct a systematic comparative study of:
 
 -   Other contenders: Including **Random Forest** and robust linear models such as **Huber Regressor.**
 
-As markets become increasingly automated, accurate real-time volatility forecasting is critical not just for performance, but for resilience. This study bridges statistical theory and modern data-driven methods, revealing how high-frequency data and machine learning can reshape our understanding of market dynamics.
+As markets automate, real-time volatility forecasting becomes essential for both performance and resilience. This study bridges traditional models and machine learning to show how high-frequency data can sharpen our view of market dynamics.
 
 # Method Overview
 
@@ -160,7 +162,7 @@ df_low = generate_representative_dataset(low_vol_stocks, label='low')
 
 ------------------------------------------------------------------------
 
-**Additional Dataset of App Deployment** For real-world deployment, we integrated a complementary dataset provided by Optiver. This includes real stocks such as Apple and Amazon, along with identifiable tickers and sequential time_ids mapped to real timestamps. This dataset was used in the interactive application to simulate predictions in a production-like setting (see `additional_data_merge.py` for merging logic).
+**Additional Dataset of App Deployment** For real-world deployment, we integrated a complementary dataset provided by Optiver. This includes real stocks such as Apple and Amazon, along with identifiable tickers and sequential time_ids mapped to real timestamps. This dataset was used in the interactive application to simulate predictions in a production-like setting.
 
 ## Data Preprocessing
 
@@ -381,7 +383,7 @@ Model performance was assessed using three key metrics: **Root Mean Squared Erro
 
 -   **MAE** (@rmse-mae) offers a noise-tolerant alternative by averaging absolute deviations, better reflecting performance under typical high-frequency noise.
 
--   **MDA** (@vishweda_mda) evaluates whether the model correctly predicts the *direction* of volatility changes—crucial for anticipating market regime shifts and informing position management.
+-   **MDA** (@patton2009evaluating) evaluates whether the model correctly predicts the *direction* of volatility changes—crucial for anticipating market regime shifts and informing position management.
 
 In addition to accuracy, we also recorded prediction times, as latency is a critical constraint in high-frequency settings
 
@@ -411,9 +413,9 @@ Our evaluation revealed consistent and substantial performance differences acros
 
 **Machine Learning Models Outperform Traditional Approaches**
 
-Among all models tested, LightGBM delivered the best overall performance, achieving the lowest RMSE ($0.000091$) and MAE ($0.000066$)—representing over 99% error reduction relative to EGARCH. It also attained the highest directional accuracy (87.42%), indicating strong predictive skill in capturing both the magnitude and direction of short-term volatility movements.
+Among all models tested, LightGBM delivered the best overall performance, achieving the lowest RMSE ($0.000091$) and MAE ($0.000066$)—representing over 99% error reduction relative to EGARCH. It also attained the highest directional accuracy ($87.42\%$), indicating strong predictive skill in capturing both the magnitude and direction of short-term volatility movements.
 
-In contrast, EGARCH performed weakest across all metrics: RMSE and MAE were orders of magnitude higher, and directional accuracy fell to 49.45%, below the level of random guessing. This gap highlights the limitations of traditional econometric models when applied to high-frequency, non-stationary data streams.
+In contrast, EGARCH performed weakest across all metrics: RMSE and MAE were orders of magnitude higher, and directional accuracy fell to $49.45\%$, below the level of random guessing. This gap highlights the limitations of traditional econometric models when applied to high-frequency, non-stationary data streams.
 
 All machine learning models—including XGBoost, Random Forest, and Huber Regression—consistently outperformed EGARCH across accuracy and directionality metrics.
 
@@ -567,7 +569,7 @@ To achieve this, we developed a robust and time-aware tuning pipeline combining 
 
 1.  **Temporal Integrity with `TimeSeriesSplit` Cross Validation**
 
-We employed **`TimeSeriesSplit` (@skl**earnTimeSeriesSplit) cross-validation to preserve chronological structure and avoid lookahead bias. Each training fold strictly preceded its corresponding validation set, replicating realistic forecasting conditions. This setup ensured that performance gains were genuine and generalisable—not artefacts of data leakage.
+We employed **`TimeSeriesSplit`** cross-validation to preserve chronological structure and avoid lookahead bias. Each training fold strictly preceded its corresponding validation set, replicating realistic forecasting conditions.
 
 2.  **Efficient Hyperparameter Optimisation with `optuna`**
 
@@ -583,7 +585,7 @@ Hyperparameters were tuned using **`optuna`**, an efficient Bayesian optimisatio
 
 This allowed broader, deeper exploration of LightGBM’s parameter space without compromising evaluation rigor.
 
-3.  Stable Evaluation via RMSE averaging
+3.  **Stable Evaluation via RMSE averaging**
 
 Performance during tuning was assessed using average RMSE across five sequential folds. This smoothed out the impact of volatile market intervals and provided a stable metric for guiding the search process.
 
@@ -687,9 +689,7 @@ shap_mean = shap_df.abs().mean().sort_values(ascending=False)
 
 **Microstructure Features Dominate**
 
-The model's predictions were overwhelmingly driven by ultra-recent WAP (weighted average price) differentials, particularly `wap_delta_1`, which had a SHAP impact over 10× higher than any other feature. This confirms our hypothesis: short-term volatility is governed by immediate order book imbalances, not lagged returns.
-
-Successive `wap_delta_k` features (2–5) were also influential, indicating that the model captures fine-grained price dynamics akin to momentum and acceleration at millisecond resolution—critical for forecasting volatility spikes.
+Volatility predictions were driven primarily by ultra-recent WAP changes—especially `wap_delta_1`, whose SHAP value was over 10× greater than any other feature. This supports our view that short-term volatility stems from immediate order book imbalances, not historical returns. Successive `wap_delta_k` features (2–5) also ranked highly, capturing rapid momentum shifts crucial for detecting volatility spikes.
 
 ------------------------------------------------------------------------
 
@@ -733,11 +733,7 @@ plt.show()
 
 # Robustness Check and Generalisability
 
-To assess generalisation, we evaluated LightGBM on disjoint high- and low-volatility subsets (`df_high`, `df_low`) derived from the stock dataset initially.
-
-The model performed strongly on `df_low`, exceeding its full-sample baseline in both RMSE and MAE—demonstrating effective generalisation under stable conditions. In contrast, performance declined on `df_high`, reflecting the inherent difficulty of capturing sharp, irregular volatility spikes using static-tree models optimised on broader market conditions (see Appendix C for metrics).
-
-Despite this drop, LightGBM retained operational utility, with results supporting its use as a core forecasting module in risk-aware trading systems operating in low- to moderate-volatility regimes.
+We tested LightGBM on separate high- and low-volatility subsets (`df_high` and `df_low`). It outperformed the full-sample baseline on the low-volatility data, showing strong generalisation in stable markets. Performance declined on the high-volatility subset, reflecting challenges in capturing sharp spikes with static-tree models (see Appendix C). Despite this, LightGBM remains effective for risk-aware trading in low- to moderate-volatility conditions.
 
 ```{python}
 high_vol_metrics = pd.read_csv("model_results/high_rv_metrics.csv")
@@ -773,6 +769,17 @@ The underperformance of EGARCH stems from its reliance on stationarity assumptio
 These results suggest a paradigm shift: modern tree-based machine learning models, when properly tuned and engineered, offer a compelling alternative to traditional volatility models, especially in low-latency trading environments.
 
 Nevertheless, LightGBM is not without limitations—it remains sensitive to noise, computationally intensive during feature generation, and less responsive to exogenous shocks like macroeconomic events. Future work could explore hybrid models that combine the real-time responsiveness of LightGBM with macro-aware components or regime-switching mechanisms.
+
+# Student Contributions
+
+| Student Name | Work Contributed in Report |
+|---------------|---------------------------------------------------------|
+| Charlie | Robustness checking and generalisability, executive summary, App refining, github managing, formatting report |
+| Emily | Introduction, Model Candidates, data overview, data preprocessing, Feature engineering, model candidates, train/test for ml models, hyperparameter tuning, schematic design, feature selection, all code and plot, formatting report, Code for App |
+| Gary | Results analysis, limitation of models |
+| Hoang | Executive summary, interpretation of model and results |
+| Seif | Model metrics, Conclusion, EGARCH explanation and limitations, Introduction |
+| Xinping | Limitations of final model, future work, methods short overview |
 
 # Appendix
 
