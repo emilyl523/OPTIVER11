@@ -764,11 +764,9 @@ With seamless visualization, real-time forecasting, regime detection, and integr
 
 This report set out to evaluate whether machine learning models trained on high-frequency order book data can outperform traditional econometric approaches like EGARCH in forecasting short-term volatility. The findings clearly support this hypothesis: LightGBM consistently outperformed all benchmarks, including XGBoost and EGARCH, across multiple evaluation metrics.
 
-The underperformance of EGARCH stems from its reliance on stationarity assumptions and inability to adapt to the irregular, non-linear dynamics of high-frequency markets. In contrast, LightGBM’s leaf-wise growth and histogram-based learning enabled fine-grained adaptation to abrupt volatility shifts, leveraging complex interactions in microstructural features.
+EGARCH’s underperformance reflects its reliance on stationarity and limited ability to model the irregular, non-linear dynamics of high-frequency markets. In contrast, LightGBM’s leaf-wise growth and histogram-based learning captured abrupt volatility shifts by leveraging complex microstructural features.
 
-These results suggest a paradigm shift: modern tree-based machine learning models, when properly tuned and engineered, offer a compelling alternative to traditional volatility models, especially in low-latency trading environments.
-
-Nevertheless, LightGBM is not without limitations—it remains sensitive to noise, computationally intensive during feature generation, and less responsive to exogenous shocks like macroeconomic events. Future work could explore hybrid models that combine the real-time responsiveness of LightGBM with macro-aware components or regime-switching mechanisms.
+These results suggest a paradigm shift: well-tuned tree-based models can effectively replace traditional volatility forecasting in low-latency environments. However, LightGBM has limitations—namely, sensitivity to noise, computational overhead in feature generation, and lack of responsiveness to macro shocks. Future work could explore hybrid models that integrate LightGBM’s microstructural sensitivity with macroeconomic indicators or adaptive regime-switching architectures to improve robustness under structural market shifts.
 
 # Student Contributions
 
