@@ -280,7 +280,8 @@ with st.sidebar:
     )
     start_time = st.time_input(
         "Start Time",
-        value=default_time)
+        value=default_time,
+        step=60)
         
     # Analysis parameters
     st.header("⚙️ Analysis Parameters")
